@@ -264,9 +264,10 @@
 
  ^{:doc "Same as (def name (fn [params* ] exprs*)) or (def
     name (fn ([params* ] exprs*)+)) with any doc-string or attrs added
-    to the var metadata"
-   :arglists '([name doc-string? attr-map? [params*] body]
-                [name doc-string? attr-map? ([params*] body)+ attr-map?])
+    to the var metadata. prepost-map defines a map with optional keys
+    :pre and :post that contain collections of pre or post conditions."
+   :arglists '([name doc-string? attr-map? [params*] prepost-map? body]
+                [name doc-string? attr-map? ([params*] prepost-map? body)+ attr-map?])
    :added "1.0"}
  defn (fn defn [&form &env name & fdecl]
         (let [m (if (string? (first fdecl))
@@ -727,10 +728,10 @@
   ([x] true)
   ([x y] (clojure.lang.Util/equiv x y))
   ([x y & more]
-   (if (= x y)
+   (if (clojure.lang.Util/equiv x y)
      (if (next more)
        (recur y (first more) (next more))
-       (= y (first more)))
+       (clojure.lang.Util/equiv y (first more)))
      false)))
 
 ;equals-based
@@ -1811,7 +1812,7 @@
   {:private true
    :added "1.3"}
   [f]
-  (let [frame (clojure.lang.Var/getThreadBindingFrame)]
+  (let [frame (clojure.lang.Var/cloneThreadBindingFrame)]
     (fn 
       ([]
          (clojure.lang.Var/resetThreadBindingFrame frame)
@@ -4220,6 +4221,26 @@
     (with-out-str
      (apply println xs)))
 
+(import clojure.lang.ExceptionInfo)
+(defn ex-info
+  "Alpha - subject to change.
+   Create an instance of ExceptionInfo, a RuntimeException subclass
+   that carries a map of additional data."
+  {:added "1.4"}
+  ([msg map]
+     (ExceptionInfo. msg map))
+  ([msg map cause]
+     (ExceptionInfo. msg map cause)))
+
+(defn ex-data
+  "Alpha - subject to change.
+   Returns exception data (a map) if ex is an ExceptionInfo.
+   Otherwise returns nil."
+  {:added "1.4"}
+  [ex]
+  (when (instance? ExceptionInfo ex)
+    (.getData ^ExceptionInfo ex)))
+
 (defmacro assert
   "Evaluates expr and throws an exception if it does not evaluate to
   logical true."
@@ -4533,10 +4554,13 @@
 
 
 (defn hash
-  "Returns the hash code of its argument"
+  "Returns the hash code of its argument. Note this is the hash code
+  consistent with =, and thus is different than .hashCode for Integer,
+  Short, Byte and Clojure collections."
+
   {:added "1.0"
    :static true}
-  [x] (. clojure.lang.Util (hash x)))
+  [x] (. clojure.lang.Util (hasheq x)))
 
 (defn interpose
   "Returns a lazy seq of the elements of coll separated by sep"
@@ -5402,8 +5426,8 @@
 
 (defn get-in
   "Returns the value in a nested associative structure,
-  where ks is a sequence of ke(ys. Returns nil if the key is not present,
-  or the not-found value if supplied."
+  where ks is a sequence of keys. Returns nil if the key
+  is not present, or the not-found value if supplied."
   {:added "1.2"
    :static true}
   ([m ks]
@@ -6005,6 +6029,35 @@
     (persistent! (reduce conj! (transient to) from))
     (reduce conj to from)))
 
+(defn mapv
+  "Returns a vector consisting of the result of applying f to the
+  set of first items of each coll, followed by applying f to the set
+  of second items in each coll, until any one of the colls is
+  exhausted.  Any remaining items in other colls are ignored. Function
+  f should accept number-of-colls arguments."
+  {:added "1.4"
+   :static true}
+  ([f coll]
+     (-> (reduce (fn [v o] (conj! v (f o))) (transient []) coll)
+         persistent!))
+  ([f c1 c2]
+     (into [] (map f c1 c2)))
+  ([f c1 c2 c3]
+     (into [] (map f c1 c2 c3)))
+  ([f c1 c2 c3 & colls]
+     (into [] (apply map f c1 c2 c3 colls))))
+
+(defn filterv
+  "Returns a vector of the items in coll for which
+  (pred item) returns true. pred must be free of side-effects."
+  {:added "1.4"
+   :static true}
+  [pred coll]
+  (-> (reduce (fn [v o] (if (pred o) (conj! v o) v))
+              (transient [])
+              coll)
+      persistent!))
+
 (require '[clojure.java.io :as jio])
 
 (defn- normalize-slurp-opts
@@ -6219,7 +6272,7 @@
 (defn flatten
   "Takes any nested combination of sequential things (lists, vectors,
   etc.) and returns their contents as a single, flat sequence.
-  (flatten nil) returns nil."
+  (flatten nil) returns an empty sequence."
   {:added "1.2"
    :static true}
   [x]

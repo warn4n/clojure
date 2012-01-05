@@ -456,6 +456,11 @@ static public int nextID(){
 	return id.getAndIncrement();
 }
 
+// Load a library in the System ClassLoader instead of Clojure's own.
+public static void loadLibrary(String libname){
+    System.loadLibrary(libname);
+}
+
 
 ////////////// Collections support /////////////////////////////////
 
@@ -694,6 +699,10 @@ static public Object contains(Object coll, Object key){
 	else if(coll instanceof Map) {
 		Map m = (Map) coll;
 		return m.containsKey(key) ? T : F;
+	}
+	else if(coll instanceof Set) {
+		Set s = (Set) coll;
+		return s.contains(key) ? T : F;
 	}
 	else if(key instanceof Number && (coll instanceof String || coll.getClass().isArray())) {
 		int n = ((Number) key).intValue();

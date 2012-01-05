@@ -461,11 +461,13 @@ static class DefExpr implements Expr{
 				}
 			IPersistentMap mm = sym.meta();
 			boolean isDynamic = RT.booleanCast(RT.get(mm,dynamicKey));
+			if(isDynamic)
+			   v.setDynamic();
             if(!isDynamic && sym.name.startsWith("*") && sym.name.endsWith("*") && sym.name.length() > 1)
                 {
                 RT.errPrintWriter().format("Warning: %1$s not declared dynamic and thus is not dynamically rebindable, "
-                                          +"but its name suggests otherwise. Please either indicate ^:dynamic %1$s or change the name.\n",
-                                           sym);
+                                          +"but its name suggests otherwise. Please either indicate ^:dynamic %1$s or change the name. (%2$s:%3$d)\n",
+                                           sym, SOURCE_PATH.get(), LINE.get());
                 }
 			if(RT.booleanCast(RT.get(mm, arglistsKey)))
 				{
@@ -769,8 +771,9 @@ static public abstract class HostExpr implements Expr, MaybePrimitiveExpr{
 					{
 					if(returnType == int.class)
 						{
-						gen.visitInsn(I2L);
-						gen.invokeStatic(NUMBERS_TYPE, Method.getMethod("Number num(long)"));
+						gen.invokeStatic(INTEGER_TYPE, intValueOfMethod);
+//						gen.visitInsn(I2L);
+//						gen.invokeStatic(NUMBERS_TYPE, Method.getMethod("Number num(long)"));
 						}
 					else if(returnType == float.class)
 						{
@@ -874,10 +877,10 @@ static public abstract class HostExpr implements Expr, MaybePrimitiveExpr{
 			Expr instance = null;
 			if(c == null)
 				instance = analyze(context == C.EVAL ? context : C.EXPRESSION, RT.second(form));
-			boolean maybeField = RT.length(form) == 3 &&
-			                     (RT.third(form) instanceof Symbol
-									|| RT.third(form) instanceof Keyword);
-			if(maybeField && !(RT.third(form) instanceof Keyword))
+
+			boolean maybeField = RT.length(form) == 3 && (RT.third(form) instanceof Symbol);
+
+			if(maybeField && !(((Symbol)RT.third(form)).name.charAt(0) == '-'))
 				{
 				Symbol sym = (Symbol) RT.third(form);
 				if(c != null)
@@ -885,11 +888,12 @@ static public abstract class HostExpr implements Expr, MaybePrimitiveExpr{
 				else if(instance != null && instance.hasJavaClass() && instance.getJavaClass() != null)
 					maybeField = Reflector.getMethods(instance.getJavaClass(), 0, munge(sym.name), false).size() == 0;
 				}
+
 			if(maybeField)    //field
 				{
-				Symbol sym = (RT.third(form) instanceof Keyword)?
-				             ((Keyword)RT.third(form)).sym
-							:(Symbol) RT.third(form);
+				Symbol sym = (((Symbol)RT.third(form)).name.charAt(0) == '-') ?
+					Symbol.intern(((Symbol)RT.third(form)).name.substring(1))
+						:(Symbol) RT.third(form);
 				Symbol tag = tagOf(form);
 				if(c != null) {
 					return new StaticFieldExpr(line, c, munge(sym.name), tag);
@@ -1364,8 +1368,8 @@ static class InstanceMethodExpr extends MethodExpr{
 		if(method == null && RT.booleanCast(RT.WARN_ON_REFLECTION.deref()))
 			{
 			RT.errPrintWriter()
-		      .format("Reflection warning, %s:%d - call to %s can't be resolved with arguments of type %s.\n",
-					  SOURCE_PATH.deref(), line, methodName, signatureString(exprsClasses(args)));
+		      .format("Reflection warning, %s:%d - call to %s can't be resolved.\n",
+					  SOURCE_PATH.deref(), line, methodName);
 			}
 	}
 
@@ -1513,8 +1517,8 @@ static class StaticMethodExpr extends MethodExpr{
 		if(method == null && RT.booleanCast(RT.WARN_ON_REFLECTION.deref()))
 			{
 			RT.errPrintWriter()
-              .format("Reflection warning, %s:%d - call to %s can't be resolved with arguments of type %s.\n",
-                      SOURCE_PATH.deref(), line, methodName, signatureString(exprsClasses(args)));
+              .format("Reflection warning, %s:%d - call to %s can't be resolved.\n",
+                      SOURCE_PATH.deref(), line, methodName);
 			}
 	}
 
@@ -2261,37 +2265,12 @@ static public boolean subsumes(Class[] c1, Class[] c2){
 	return better;
 }
 
-static String expandArrayClassname (Class c) {
-    if (c.isArray()) {
-        return expandArrayClassname(c.getComponentType()) + "[]";
-    } else {
-        return c.getName();
-    }
-}
-
-static String signatureString (List classes) {
-    StringBuilder sb = new StringBuilder("(");
-    for (int i = 0, len = classes.size(); i < len; i++) {
-        sb.append(expandArrayClassname((Class)classes.get(i)));
-        if (i < len - 1) sb.append(", ");
-    }
-    return sb.append(")").toString();
-}
-
-static List<Class> exprsClasses (IPersistentVector exprs) {
-    PersistentVector v = PersistentVector.EMPTY;
-    for (int i = 0, len = exprs.count(); i < len; i++) {
-        v = v.cons(((Expr)exprs.nth(i)).getJavaClass());
-    }
-    return v;
-}
-
 static int getMatchingParams(String methodName, ArrayList<Class[]> paramlists, IPersistentVector argexprs,
                              List<Class> rets)
 		{
 	//presumes matching lengths
 	int matchIdx = -1;
-	int tiedIdx = -1;
+	boolean tied = false;
     boolean foundExact = false;
 	for(int i = 0; i < paramlists.size(); i++)
 		{
@@ -2312,7 +2291,7 @@ static int getMatchingParams(String methodName, ArrayList<Class[]> paramlists, I
             {
             if(!foundExact || matchIdx == -1 || rets.get(matchIdx).isAssignableFrom(rets.get(i)))
                 matchIdx = i;
-            tiedIdx = -1;
+            tied = false;
             foundExact = true;
             }
 		else if(match && !foundExact)
@@ -2324,7 +2303,7 @@ static int getMatchingParams(String methodName, ArrayList<Class[]> paramlists, I
 				if(subsumes(paramlists.get(i), paramlists.get(matchIdx)))
 					{
 					matchIdx = i;
-					tiedIdx = -1;
+					tied = false;
 					}
 				else if(Arrays.equals(paramlists.get(matchIdx), paramlists.get(i)))
 					{
@@ -2332,15 +2311,12 @@ static int getMatchingParams(String methodName, ArrayList<Class[]> paramlists, I
 						matchIdx = i;
 					}
 				else if(!(subsumes(paramlists.get(matchIdx), paramlists.get(i))))
-						tiedIdx = i;
+						tied = true;
 				}
 			}
 		}
-	if(tiedIdx != -1)
-		throw new IllegalArgumentException("More than one matching method found: " +
-		        methodName + signatureString(Arrays.asList(paramlists.get(matchIdx))) + " and " +
-		        methodName + signatureString(Arrays.asList(paramlists.get(tiedIdx))) + " for arguments of type " +
-		        signatureString(exprsClasses(argexprs)));
+	if(tied)
+		throw new IllegalArgumentException("More than one matching method found: " + methodName);
 
 	return matchIdx;
 }
@@ -2373,7 +2349,7 @@ public static class NewExpr implements Expr{
 				}
 			}
 		if(ctors.isEmpty())
-			throw new IllegalArgumentException("No matching ctor found for " + c + " with " + args.count() + " arguments");
+			throw new IllegalArgumentException("No matching ctor found for " + c);
 
 		int ctoridx = 0;
 		if(ctors.size() > 1)
@@ -2385,8 +2361,8 @@ public static class NewExpr implements Expr{
 		if(ctor == null && RT.booleanCast(RT.WARN_ON_REFLECTION.deref()))
 			{
 			RT.errPrintWriter()
-              .format("Reflection warning, %s:%d - call to %s ctor can't be resolved with arguments of type %s.\n",
-                      SOURCE_PATH.deref(), line, c.getName(), signatureString(exprsClasses(args)));
+              .format("Reflection warning, %s:%d - call to %s ctor can't be resolved.\n",
+                      SOURCE_PATH.deref(), line, c.getName());
 			}
 	}
 
@@ -6285,7 +6261,7 @@ static public Var isMacro(Object op) {
 		return null;
 	if(op instanceof Symbol || op instanceof Var)
 		{
-		Var v = (op instanceof Var) ? (Var) op : lookupVar((Symbol) op, false);
+                Var v = (op instanceof Var) ? (Var) op : lookupVar((Symbol) op, false, false);
 		if(v != null && v.isMacro())
 			{
 			if(v.ns != currentNS() && !v.isPublic())
@@ -6782,7 +6758,7 @@ static public Object maybeResolveIn(Namespace n, Symbol sym) {
 }
 
 
-static Var lookupVar(Symbol sym, boolean internNew) {
+static Var lookupVar(Symbol sym, boolean internNew, boolean registerMacro) {
 	Var var = null;
 
 	//note - ns-qualified vars in other namespaces must already exist
@@ -6811,7 +6787,7 @@ static Var lookupVar(Symbol sym, boolean internNew) {
 				//introduce a new var in the current ns
 				if(internNew)
 					var = currentNS().intern(Symbol.intern(sym.name));
-				}
+					}
 			else if(o instanceof Var)
 				{
 				var = (Var) o;
@@ -6821,9 +6797,12 @@ static Var lookupVar(Symbol sym, boolean internNew) {
 				throw Util.runtimeException("Expecting var, but " + sym + " is mapped to " + o);
 				}
 			}
-	if(var != null)
+	if(var != null && (!var.isMacro() || registerMacro))
 		registerVar(var);
 	return var;
+}
+static Var lookupVar(Symbol sym, boolean internNew) {
+    return lookupVar(sym, internNew, true);
 }
 
 private static void registerVar(Var var) {
@@ -7269,7 +7248,7 @@ static public class NewInstanceExpr extends ObjExpr{
 			//use array map to preserve ctor order
 			ret.closes = new PersistentArrayMap(closesvec);
 			ret.fields = fmap;
-			for(int i=fieldSyms.count()-1;i >= 0 && ((Symbol)fieldSyms.nth(i)).name.startsWith("__");--i)
+			for(int i=fieldSyms.count()-1;i >= 0 && (((Symbol)fieldSyms.nth(i)).name.equals("__meta") || ((Symbol)fieldSyms.nth(i)).name.equals("__extmap"));--i)
 				ret.altCtorDrops++;
 			}
 		//todo - set up volatiles
